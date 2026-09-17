@@ -2,3 +2,4 @@ streamlit>=1.39
 pandas>=2.0
 openpyxl>=3.1
 graphviz>=0.20
+pillow>=10.0

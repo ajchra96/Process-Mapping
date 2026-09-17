@@ -7,6 +7,7 @@ The workbook is uploaded in the session. It is not written to disk.
 ## Local run
 
 ```bash
+cd Impact
 pip install -r requirements.txt
 # system Graphviz is required for st.graphviz_chart
 # macOS: brew install graphviz
@@ -14,10 +15,12 @@ pip install -r requirements.txt
 streamlit run streamlit_app.py
 ```
 
+Upload `Processes.xlsx` from the parent folder in the sidebar. It is not stored with the app files.
+
 ## Streamlit Community Cloud
 
-1. Push this folder to a GitHub repo. Do not commit the plant workbook if it is sensitive.
-2. Deploy `streamlit_app.py`.
+1. Push the `Impact` folder to a GitHub repo. Leave the plant workbook out of the repo if it is sensitive.
+2. Deploy `Impact/streamlit_app.py`.
 3. Cloud installs Python deps from `requirements.txt` and the `graphviz` OS package from `packages.txt`.
 
 ## Layout

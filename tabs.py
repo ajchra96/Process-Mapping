@@ -13,12 +13,27 @@ from data import (
     build_tree_graph,
     export_graph_image,
     export_line_image,
+    export_tree_image,
 )
 
 
 def _text(value) -> str:
     cleaned = _clean_str(value)
     return cleaned if cleaned else "—"
+
+
+def _download_chart(chart, filename: str, key: str, label: str = "Download chart image", fallback=None) -> None:
+    png = export_graph_image(chart, "png") or fallback
+    if not png:
+        st.caption("Could not build a download image.")
+        return
+    st.download_button(
+        label,
+        data=png,
+        file_name=filename,
+        mime="image/png",
+        key=key,
+    )
 
 
 def _encased_field(label: str, value) -> None:
@@ -37,7 +52,7 @@ def render_flow_tab(model: ProcessData) -> None:
         return
 
     if "selected_lines" not in st.session_state:
-        st.session_state.selected_lines = [lines[0]]
+        st.session_state.selected_lines = list(lines)
     else:
         valid_lines = [line for line in st.session_state.selected_lines if line in lines]
         if valid_lines != st.session_state.selected_lines:
@@ -47,6 +62,12 @@ def render_flow_tab(model: ProcessData) -> None:
         "Lines to inspect",
         options=lines,
         key="selected_lines",
+    )
+    st.radio(
+        "Chart layout",
+        options=["Horizontal", "Vertical"],
+        horizontal=True,
+        key="flow_orientation",
     )
     steps = model.steps_for_lines(selected_lines)
     if steps.empty:
@@ -58,7 +79,7 @@ def render_flow_tab(model: ProcessData) -> None:
         st.session_state.selected_step = step_ids[0]
 
     labels = {
-        row["StepID"]: f"{row['StepID']}  ·  {row['Process']}  ·  {row['Zone']}"
+        row["StepID"]: f"{row['StepID']}  ·  {row['Process']}  ·  {row['Line']}"
         for _, row in steps.iterrows()
     }
     st.selectbox(
@@ -68,27 +89,25 @@ def render_flow_tab(model: ProcessData) -> None:
         key="selected_step",
     )
 
+    rankdir = "TB" if st.session_state.get("flow_orientation") == "Vertical" else "LR"
     line_chart = build_line_graph(
         steps,
         st.session_state.selected_step,
         all_steps=model.process_map,
+        rankdir=rankdir,
     )
-    st.graphviz_chart(line_chart, width="content", height=480)
-    st.caption(
-        "On-screen chart is capped to the page width by Streamlit, so it will keep fitting. "
-        "Download the PNG to zoom and pan freely."
-    )
-    png = export_graph_image(line_chart, "png") or export_line_image(
-        steps,
-        st.session_state.selected_step,
-        all_steps=model.process_map,
-    )
-    st.download_button(
-        "Download chart image",
-        data=png,
-        file_name="process-flow.png",
-        mime="image/png",
-        key="download_line_png",
+    st.graphviz_chart(line_chart, width="content")
+    _download_chart(
+        line_chart,
+        "process-flow.png",
+        "download_line_png",
+        "Download this chart",
+        fallback=export_line_image(
+            steps,
+            st.session_state.selected_step,
+            all_steps=model.process_map,
+            rankdir=rankdir,
+        ),
     )
 
     step = model.step_row(st.session_state.selected_step)
@@ -334,7 +353,15 @@ def render_troubleshoot_tab(model: ProcessData) -> None:
         group = model.troubleshooting
         if "Type" in group.columns and _clean_str(node.get("Type")):
             group = group[group["Type"] == node.get("Type")]
-        st.graphviz_chart(build_tree_graph(group, current_id), width="stretch")
+        tree_chart = build_tree_graph(group, current_id)
+        st.graphviz_chart(tree_chart, width="stretch")
+        _download_chart(
+            tree_chart,
+            "troubleshoot-tree.png",
+            "download_tree_png",
+            "Download this tree",
+            fallback=export_tree_image(group, current_id),
+        )
 
 
 def render_documents_tab(model: ProcessData) -> None:

@@ -14,7 +14,7 @@ from data import (
     load_workbook,
 )
 
-DEFAULT_WORKBOOK = Path("/home/workdir/attachments/Processes.xlsx")
+DEFAULT_WORKBOOK = Path(__file__).resolve().parents[1] / "Processes.xlsx"
 
 
 def walk_tree(model, start_id: str) -> set[str]:
@@ -79,6 +79,14 @@ def main() -> None:
 
     tree_src = build_tree_graph(model.troubleshooting, "S1-Q-1").source
     assert "S1-Q-1" in tree_src
+    assert "Are BOTH sieve drums stopped?" in tree_src
+    vertical = build_line_graph(
+        model.steps_for_lines(model.lines()),
+        model.process_map["StepID"].iloc[0],
+        all_steps=model.process_map,
+        rankdir="TB",
+    ).source
+    assert "rankdir=TB" in vertical
     print("verify_workbook: ok")
 
 

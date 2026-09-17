@@ -21,6 +21,7 @@ def _reset_session_for_new_file() -> None:
         "selected_step",
         "selected_control_id",
         "process_sheet_table",
+        "flow_orientation",
         "ts_symptom",
         "ts_node",
         "ts_path",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import re
+from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Any
 
@@ -14,15 +15,15 @@ from PIL import Image, ImageDraw, ImageFont
 # Drying return points at a StepID that is not on the map.
 NEXT_ID_ALIASES = {"B-TP-07-01": "B-TP-07-02"}
 
-ZONE_COLORS = [
-    "#E8F1F8",
-    "#EAF4EA",
-    "#F8F0E3",
-    "#F3EAF6",
-    "#F8EAEA",
-    "#E8F5F3",
-    "#F4F1E6",
-    "#ECEFF4",
+LINE_COLORS = [
+    "#D6E6F5",
+    "#D8EEDC",
+    "#F3E4C8",
+    "#E6D8F0",
+    "#F4D6D6",
+    "#D4EDEB",
+    "#EEE6C9",
+    "#DDE2EA",
 ]
 
 
@@ -57,6 +58,30 @@ def gv_escape(text: Any, max_len: int = 48) -> str:
     if len(raw) > max_len:
         raw = raw[: max_len - 1].rstrip() + "…"
     return raw
+
+
+def wrap_words(text: Any, width: int = 42) -> list[str]:
+    """Word-wrap. Keeps the full string; does not truncate."""
+    raw = _clean_str(text) or ""
+    raw = raw.replace("\\", " ").replace('"', "'").replace("\n", " ")
+    words = raw.split()
+    if not words:
+        return []
+    lines: list[str] = []
+    current = words[0]
+    for word in words[1:]:
+        trial = f"{current} {word}"
+        if len(trial) <= width:
+            current = trial
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
+def gv_wrap(text: Any, width: int = 42) -> str:
+    return "\\n".join(wrap_words(text, width))
 
 
 @dataclass
@@ -236,10 +261,10 @@ def _as_yes_no(value: Any) -> str | None:
     return text
 
 
-def zone_color_map(zones: list[str]) -> dict[str, str]:
+def line_color_map(lines: list[str]) -> dict[str, str]:
     colors = {}
-    for i, zone in enumerate(zones):
-        colors[zone] = ZONE_COLORS[i % len(ZONE_COLORS)]
+    for i, line in enumerate(lines):
+        colors[line] = LINE_COLORS[i % len(LINE_COLORS)]
     return colors
 
 
@@ -252,9 +277,10 @@ def build_line_graph(
     steps: pd.DataFrame,
     selected_step: str | None = None,
     all_steps: pd.DataFrame | None = None,
+    rankdir: str = "LR",
 ) -> Digraph:
     chart = Digraph("line_flow")
-    chart.attr(rankdir="LR", splines="spline", nodesep="0.45", ranksep="0.70")
+    chart.attr(rankdir=rankdir, splines="spline", nodesep="0.45", ranksep="0.70")
     chart.attr(
         "node",
         shape="box",
@@ -262,10 +288,10 @@ def build_line_graph(
         fontname="Helvetica",
         fontsize="14",
         color="#8A93A0",
-        fillcolor="#F7F8FA",
+        fillcolor="#FFFFFF",
     )
     chart.attr("edge", color="#5C6670", arrowsize="0.8")
-    chart.attr("graph", fontname="Helvetica", fontsize="13")
+    chart.attr("graph", fontname="Helvetica", fontsize="13", bgcolor="white")
 
     if steps.empty:
         chart.node("empty", "No steps for the selected line(s)")
@@ -276,7 +302,8 @@ def build_line_graph(
 
     known = set(steps["StepID"])
     zones = list(dict.fromkeys(steps["Zone"].tolist()))
-    colors = zone_color_map(zones)
+    line_order = list(dict.fromkeys(steps["Line"].tolist()))
+    fills = line_color_map(line_order)
 
     for i, zone in enumerate(zones):
         with chart.subgraph(name=f"cluster_{i}") as cluster:
@@ -284,14 +311,16 @@ def build_line_graph(
                 label=gv_escape(zone, 60),
                 style="rounded,filled",
                 color="#D0D5DD",
-                fillcolor=colors[zone],
+                fillcolor="#FFFFFF",
                 fontsize="13",
             )
             zone_steps = steps[steps["Zone"] == zone]
             for _, row in zone_steps.iterrows():
                 step_id = row["StepID"]
                 label = f"{step_id}\\n{gv_escape(row['Process'], 40)}"
-                attrs = {}
+                attrs = {
+                    "fillcolor": fills.get(row["Line"], "#FFFFFF"),
+                }
                 if step_id == selected_step:
                     attrs = {
                         "fillcolor": "#C8102E",
@@ -352,7 +381,7 @@ def build_line_graph(
 
 
 def export_graph_image(chart: Digraph, fmt: str = "png") -> bytes | None:
-    """Prefer Graphviz `dot` when present; otherwise None."""
+    """Exact Graphviz render when `dot` is installed; otherwise None."""
     try:
         return chart.pipe(format=fmt)
     except Exception:
@@ -373,101 +402,118 @@ def _load_font(size: int) -> ImageFont.ImageFont:
     return ImageFont.load_default()
 
 
-def _wrap(draw: ImageDraw.ImageDraw, text: str, font, max_width: int) -> list[str]:
-    words = text.split()
-    if not words:
-        return [""]
-    lines: list[str] = []
-    current = words[0]
-    for word in words[1:]:
-        trial = f"{current} {word}"
-        if draw.textlength(trial, font=font) <= max_width:
-            current = trial
-        else:
-            lines.append(current)
-            current = word
-    lines.append(current)
-    return lines[:3]
+def _save_png(image: Image.Image) -> bytes:
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def export_line_image(
     steps: pd.DataFrame,
     selected_step: str | None = None,
     all_steps: pd.DataFrame | None = None,
+    rankdir: str = "LR",
 ) -> bytes:
-    """PNG of the selected line. Pure Python so the download button always works."""
-    box_w, box_h = 230, 88
-    gap_x, top, left = 36, 58, 28
+    """PNG of the current line selection, colors, highlight, and orientation."""
+    box_w, box_h = 210, 86
+    gap, pad, header_h = 26, 28, 26
     lookup = all_steps if all_steps is not None else steps
     line_by_id = {row["StepID"]: row["Line"] for _, row in lookup.iterrows()}
     known = set(steps["StepID"]) if not steps.empty else set()
+    line_order = list(dict.fromkeys(steps["Line"].tolist())) if not steps.empty else []
+    fills = line_color_map(line_order)
 
-    cards: list[dict[str, Any]] = []
-    for _, row in steps.iterrows():
-        cards.append(
-            {
-                "id": row["StepID"],
-                "title": str(row["StepID"]),
-                "subtitle": str(row["Process"]),
-                "zone": str(row["Zone"]),
-                "selected": row["StepID"] == selected_step,
-                "stub": False,
-            }
-        )
-
-    stub_ids: list[str] = []
-    seen_stubs: set[str] = set()
-    for _, row in steps.iterrows():
-        for dest in row["NextIDs"]:
-            if dest in known:
-                continue
-            if dest == "Next station":
-                label, key = "Next station", "Next station"
-            else:
-                dest_line = line_by_id.get(dest)
-                label = f"Next line: {dest_line}" if dest_line else dest
-                key = dest_line or dest
-            if key in seen_stubs:
-                continue
-            seen_stubs.add(key)
-            stub_ids.append(key)
+    groups: list[tuple[str, list[dict[str, Any]]]] = []
+    for line in line_order:
+        cards: list[dict[str, Any]] = []
+        line_steps = steps[steps["Line"] == line]
+        for _, row in line_steps.iterrows():
             cards.append(
                 {
-                    "id": key,
-                    "title": "Next line" if dest != "Next station" else "Next station",
-                    "subtitle": dest_line or dest,
-                    "zone": "",
-                    "selected": False,
-                    "stub": True,
+                    "id": row["StepID"],
+                    "title": str(row["StepID"]),
+                    "subtitle": str(row["Process"]),
+                    "zone": str(row["Zone"]),
+                    "line": line,
+                    "selected": row["StepID"] == selected_step,
+                    "stub": False,
                 }
             )
+        seen_stubs: set[str] = set()
+        for _, row in line_steps.iterrows():
+            for dest in row["NextIDs"]:
+                if dest in known:
+                    continue
+                if dest == "Next station":
+                    key, title, subtitle = "Next station", "Next station", ""
+                else:
+                    dest_line = line_by_id.get(dest)
+                    key = dest_line or dest
+                    title = "Next line" if dest_line else dest
+                    subtitle = dest_line or dest
+                if key in seen_stubs:
+                    continue
+                seen_stubs.add(key)
+                cards.append(
+                    {
+                        "id": key,
+                        "title": title,
+                        "subtitle": subtitle,
+                        "zone": "",
+                        "line": line,
+                        "selected": False,
+                        "stub": True,
+                    }
+                )
+        groups.append((line, cards))
 
-    count = max(len(cards), 1)
-    width = left + count * (box_w + gap_x) + left
-    height = top + box_h + 40
-    image = Image.new("RGB", (width, height), "#F7F8FA")
+    if not groups:
+        image = Image.new("RGB", (480, 120), "#FFFFFF")
+        ImageDraw.Draw(image).text((20, 48), "No steps for the selected line(s)", fill="#344054", font=_load_font(16))
+        return _save_png(image)
+
+    max_n = max(len(cards) for _, cards in groups)
+    n_lines = len(groups)
+    vertical = rankdir == "TB"
+    if vertical:
+        width = pad + n_lines * (box_w + gap) + pad
+        height = pad + header_h + max_n * (box_h + gap) + pad
+    else:
+        width = pad + max_n * (box_w + gap) + pad
+        height = pad + n_lines * (header_h + box_h + gap) + pad
+
+    image = Image.new("RGB", (width, height), "#FFFFFF")
     draw = ImageDraw.Draw(image)
-    title_font = _load_font(16)
-    body_font = _load_font(13)
-    zone_font = _load_font(12)
+    title_font = _load_font(15)
+    body_font = _load_font(12)
+    zone_font = _load_font(11)
+    positions: dict[str, tuple[int, int, int, int]] = {}
 
-    positions = {}
-    last_zone = None
-    for i, card in enumerate(cards):
-        x = left + i * (box_w + gap_x)
-        y = top
-        positions[card["id"]] = (x, y, x + box_w, y + box_h)
-        if card["zone"] and card["zone"] != last_zone:
-            draw.text((x, 18), card["zone"][:42], fill="#344054", font=zone_font)
-            last_zone = card["zone"]
-        fill = "#C8102E" if card["selected"] else ("#FFFFFF" if card["stub"] else "#E8F1F8")
-        outline = "#8E0B20" if card["selected"] else "#98A2B3"
-        draw.rounded_rectangle((x, y, x + box_w, y + box_h), radius=10, fill=fill, outline=outline, width=2)
-        ink = "white" if card["selected"] else "#1D2433"
-        draw.text((x + 10, y + 8), card["title"][:28], fill=ink, font=title_font)
-        wrapped = _wrap(draw, card["subtitle"], body_font, box_w - 20)
-        for line_i, line in enumerate(wrapped):
-            draw.text((x + 10, y + 34 + line_i * 16), line, fill=ink, font=body_font)
+    for line_i, (line, cards) in enumerate(groups):
+        if vertical:
+            x0 = pad + line_i * (box_w + gap)
+            draw.text((x0, pad), line[:36], fill="#344054", font=zone_font)
+        else:
+            y_header = pad + line_i * (header_h + box_h + gap)
+            draw.text((pad, y_header), line[:60], fill="#344054", font=zone_font)
+        last_zone = None
+        for card_i, card in enumerate(cards):
+            if vertical:
+                x = pad + line_i * (box_w + gap)
+                y = pad + header_h + card_i * (box_h + gap)
+            else:
+                x = pad + card_i * (box_w + gap)
+                y = pad + line_i * (header_h + box_h + gap) + header_h
+            positions[card["id"]] = (x, y, x + box_w, y + box_h)
+            if card["zone"] and card["zone"] != last_zone and not vertical:
+                last_zone = card["zone"]
+            fill = "#C8102E" if card["selected"] else ("#FFFFFF" if card["stub"] else fills.get(card["line"], "#E8F1F8"))
+            outline = "#8E0B20" if card["selected"] else "#98A2B3"
+            draw.rounded_rectangle((x, y, x + box_w, y + box_h), radius=10, fill=fill, outline=outline, width=2)
+            ink = "white" if card["selected"] else "#1D2433"
+            draw.text((x + 10, y + 8), card["title"][:26], fill=ink, font=title_font)
+            for line_i2, text in enumerate(wrap_words(card["subtitle"], 24)[:3]):
+                draw.text((x + 10, y + 32 + line_i2 * 15), text, fill=ink, font=body_font)
 
     for _, row in steps.iterrows():
         src = row["StepID"]
@@ -482,21 +528,138 @@ def export_line_image(
                 target = line_by_id.get(dest) or dest
             if target not in positions:
                 continue
-            x1 = positions[src][2]
-            y1 = (positions[src][1] + positions[src][3]) // 2
-            x2 = positions[target][0]
-            y2 = (positions[target][1] + positions[target][3]) // 2
-            draw.line((x1, y1, x2, y2), fill="#5C6670", width=2)
-            draw.polygon([(x2, y2), (x2 - 8, y2 - 5), (x2 - 8, y2 + 5)], fill="#5C6670")
+            x1, y1, x2, y2 = positions[src]
+            tx1, ty1, tx2, ty2 = positions[target]
+            if vertical:
+                ax, ay = (x1 + x2) // 2, y2
+                bx, by = (tx1 + tx2) // 2, ty1
+            else:
+                ax, ay = x2, (y1 + y2) // 2
+                bx, by = tx1, (ty1 + ty2) // 2
+            draw.line((ax, ay, bx, by), fill="#5C6670", width=2)
 
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    return buffer.getvalue()
+    return _save_png(image)
+
+
+def export_tree_image(tree: pd.DataFrame, current_id: str | None) -> bytes:
+    """PNG of the troubleshooting tree with full wrapped prompts."""
+    if tree.empty:
+        image = Image.new("RGB", (400, 120), "#FFFFFF")
+        ImageDraw.Draw(image).text((20, 48), "No tree", fill="#344054", font=_load_font(16))
+        return _save_png(image)
+
+    colors = {"Symptom": "#F8EAEA", "Question": "#E8F1F8", "Action": "#EAF4EA"}
+    nodes: dict[str, dict[str, Any]] = {}
+    for _, row in tree.iterrows():
+        node_id = row["ID"]
+        if not _clean_str(node_id):
+            continue
+        prompt_lines = wrap_words(row.get("Prompt"), 36)
+        nodes[node_id] = {
+            "id": node_id,
+            "kind": row.get("Type2") or "",
+            "lines": [f"{node_id}  ·  {row.get('Type2') or ''}"] + prompt_lines,
+            "yes": _clean_str(row.get("If yes")),
+            "no": _clean_str(row.get("If no")),
+            "stop": _clean_str(row.get("Stop")) == "Y",
+        }
+
+    children: dict[str, list[str]] = defaultdict(list)
+    incoming: set[str] = set()
+    for node in nodes.values():
+        for nxt in (node["yes"], node["no"]):
+            if nxt and nxt in nodes and nxt not in children[node["id"]]:
+                children[node["id"]].append(nxt)
+                incoming.add(nxt)
+    roots = [nid for nid in nodes if nid not in incoming] or list(nodes.keys())[:1]
+
+    depth: dict[str, int] = {}
+    queue = deque((rid, 0) for rid in roots)
+    while queue:
+        nid, d = queue.popleft()
+        if nid in depth and depth[nid] <= d:
+            continue
+        depth[nid] = d
+        for child in children.get(nid, []):
+            queue.append((child, d + 1))
+
+    layers: dict[int, list[str]] = defaultdict(list)
+    seen: set[str] = set()
+    for nid, d in sorted(depth.items(), key=lambda item: item[1]):
+        if nid not in seen:
+            layers[d].append(nid)
+            seen.add(nid)
+    for nid in nodes:
+        if nid not in seen:
+            layers[max(layers) + 1 if layers else 0].append(nid)
+
+    box_w = 268
+    line_h = 15
+    pad_y = 10
+    gap_x, gap_y, pad = 28, 24, 24
+    heights = {
+        nid: pad_y * 2 + line_h * max(len(nodes[nid]["lines"]), 1)
+        for nid in nodes
+    }
+    max_row = max((len(row) for row in layers.values()), default=1)
+    max_h = max(heights.values()) if heights else 80
+    width = pad + max_row * (box_w + gap_x) + pad
+    height = pad + sum(max_h + gap_y for _ in layers) + pad
+    image = Image.new("RGB", (width, height), "#FFFFFF")
+    draw = ImageDraw.Draw(image)
+    font = _load_font(12)
+    header_font = _load_font(13)
+    positions: dict[str, tuple[int, int, int, int]] = {}
+
+    y = pad
+    for d in sorted(layers):
+        row = layers[d]
+        row_h = max(heights[nid] for nid in row)
+        x = pad + max((max_row - len(row)) * (box_w + gap_x) // 2, 0)
+        for nid in row:
+            h = heights[nid]
+            positions[nid] = (x, y, x + box_w, y + h)
+            x += box_w + gap_x
+        y += row_h + gap_y
+
+    for nid, node in nodes.items():
+        if nid not in positions:
+            continue
+        x1, y1, x2, y2 = positions[nid]
+        selected = nid == current_id
+        fill = "#C8102E" if selected else colors.get(node["kind"], "#FFFFFF")
+        outline = "#8E0B20" if selected else "#98A2B3"
+        width_line = 3 if node["stop"] else 2
+        draw.rounded_rectangle((x1, y1, x2, y2), radius=8, fill=fill, outline=outline, width=width_line)
+        ink = "white" if selected else "#1D2433"
+        for i, text in enumerate(node["lines"]):
+            draw.text((x1 + 8, y1 + pad_y + i * line_h), text[:42], fill=ink, font=header_font if i == 0 else font)
+
+    for nid, node in nodes.items():
+        if nid not in positions:
+            continue
+        x1, y1, x2, y2 = positions[nid]
+        sx, sy = (x1 + x2) // 2, y2
+        for label, dest in (("yes", node["yes"]), ("no", node["no"])):
+            if not dest or dest == node["yes"] and label == "no":
+                continue
+            if dest not in positions:
+                continue
+            if label == "no" and dest == node["yes"]:
+                continue
+            tx1, ty1, tx2, ty2 = positions[dest]
+            dx, dy = (tx1 + tx2) // 2, ty1
+            draw.line((sx, sy, dx, dy), fill="#5C6670", width=2)
+            if node["yes"] and node["no"] and node["yes"] != node["no"]:
+                mx, my = (sx + dx) // 2, (sy + dy) // 2
+                draw.text((mx + 4, my - 10), label, fill="#5C6670", font=font)
+
+    return _save_png(image)
 
 
 def build_sipoc_graph(step_row: pd.Series, sipoc: pd.DataFrame) -> Digraph:
     chart = Digraph("sipoc")
-    chart.attr(rankdir="LR", splines="spline", nodesep="0.4", ranksep="0.8")
+    chart.attr(rankdir="LR", splines="spline", nodesep="0.4", ranksep="0.8", bgcolor="white")
     chart.attr("node", shape="box", style="rounded,filled", fontname="Helvetica", fontsize="10")
     chart.attr("edge", color="#5C6670", arrowsize="0.7")
 
@@ -515,7 +678,7 @@ def build_sipoc_graph(step_row: pd.Series, sipoc: pd.DataFrame) -> Digraph:
     outputs = sipoc[sipoc["Flow type"] == "Output"].reset_index(drop=True)
 
     if inputs.empty and outputs.empty:
-        chart.node("none", "No SIPOC rows for this step", fillcolor="#F7F8FA")
+        chart.node("none", "No SIPOC rows for this step", fillcolor="#FFFFFF")
         return chart
 
     for i, row in inputs.iterrows():
@@ -537,8 +700,8 @@ def build_sipoc_graph(step_row: pd.Series, sipoc: pd.DataFrame) -> Digraph:
 
 def build_tree_graph(tree: pd.DataFrame, current_id: str | None) -> Digraph:
     chart = Digraph("ts_tree")
-    chart.attr(rankdir="TB", splines="spline", nodesep="0.25", ranksep="0.35")
-    chart.attr("node", shape="box", style="rounded,filled", fontname="Helvetica", fontsize="9")
+    chart.attr(rankdir="TB", splines="spline", nodesep="0.30", ranksep="0.42", bgcolor="white")
+    chart.attr("node", shape="box", style="rounded,filled", fontname="Helvetica", fontsize="8")
     chart.attr("edge", color="#5C6670", arrowsize="0.6", fontsize="8")
 
     if tree.empty:
@@ -549,8 +712,10 @@ def build_tree_graph(tree: pd.DataFrame, current_id: str | None) -> Digraph:
     for _, row in tree.iterrows():
         node_id = row["ID"]
         kind = row.get("Type2") or ""
-        label = f"{node_id}\\n{kind}"
-        attrs = {"fillcolor": colors.get(kind, "#F7F8FA")}
+        prompt = gv_wrap(row.get("Prompt"), 42)
+        header = f"{node_id}  ·  {gv_escape(kind, 24)}"
+        label = f"{header}\\n{prompt}" if prompt else header
+        attrs = {"fillcolor": colors.get(kind, "#FFFFFF")}
         if node_id == current_id:
             attrs.update(fillcolor="#C8102E", fontcolor="white", color="#8E0B20")
         if _clean_str(row.get("Stop")) == "Y":
