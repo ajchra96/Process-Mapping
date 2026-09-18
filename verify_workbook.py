@@ -87,6 +87,29 @@ def main() -> None:
         rankdir="TB",
     ).source
     assert "rankdir=TB" in vertical
+
+    assert "Hours" in model.lost_time.columns
+    if not model.lost_time.empty:
+        assert model.lost_time["Hours"].gt(0).all()
+        assert model.lost_time["Date"].notna().all()
+        span = model.date_span()
+        assert span is not None
+        windowed = model.lost_time_window(span[0], span[1])
+        assert len(windowed) == len(model.lost_time)
+        heat = build_line_graph(
+            model.steps_for_lines(model.lines()),
+            selected_step=None,
+            all_steps=model.process_map,
+            step_fillcolors={model.process_map["StepID"].iloc[0]: "#FEEDEd"},
+            highlight_selected=False,
+        ).source
+        assert "#C8102E" not in heat
+        default = build_line_graph(
+            model.steps_for_lines([model.lines()[0]]),
+            model.steps_for_lines([model.lines()[0]])["StepID"].iloc[0],
+            all_steps=model.process_map,
+        ).source
+        assert "#C8102E" in default
     print("verify_workbook: ok")
 
 

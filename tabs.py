@@ -15,6 +15,7 @@ from data import (
     export_line_image,
     export_tree_image,
 )
+from lost_time import render_step_lost_time
 
 
 def _text(value) -> str:
@@ -204,6 +205,8 @@ def _render_step_workspace(model: ProcessData, step: pd.Series) -> None:
             for i, (_, row) in enumerate(step_wis.iterrows(), start=1):
                 title = _clean_str(row.get("Title")) or _clean_str(row.get("WI_ID"))
                 st.write(f"{i}. {title}")
+
+    render_step_lost_time(model, step)
 
 
 def _sipoc_card(row: pd.Series) -> None:

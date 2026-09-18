@@ -5,6 +5,7 @@ from __future__ import annotations
 import streamlit as st
 
 from data import load_workbook
+from lost_time import render_lost_time_tab
 from tabs import render_documents_tab, render_flow_tab, render_troubleshoot_tab
 
 st.set_page_config(
@@ -26,6 +27,12 @@ def _reset_session_for_new_file() -> None:
         "ts_node",
         "ts_path",
         "ts_path_root",
+        "lt_analysis_lines",
+        "lt_analysis_window",
+        "lt_pareto_group",
+        "lt_step_window",
+        "lt_step_table_source",
+        "lt_step_table_for",
     ]:
         st.session_state.pop(key, None)
 
@@ -82,9 +89,13 @@ def main() -> None:
         st.info("Upload a process workbook in the sidebar to start. Nothing is stored on the server after the session ends.")
         return
 
-    flow_tab, ts_tab, docs_tab = st.tabs(["Process flow", "Troubleshoot", "Documents"])
+    flow_tab, lost_tab, ts_tab, docs_tab = st.tabs(
+        ["Process flow", "Lost time", "Troubleshoot", "Documents"]
+    )
     with flow_tab:
         render_flow_tab(model)
+    with lost_tab:
+        render_lost_time_tab(model)
     with ts_tab:
         render_troubleshoot_tab(model)
     with docs_tab:

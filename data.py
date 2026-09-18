@@ -94,6 +94,7 @@ class ProcessData:
     troubleshooting: pd.DataFrame
     work_instructions: pd.DataFrame
     maintenance_pm: pd.DataFrame
+    lost_time: pd.DataFrame
     source_name: str
 
     def lines(self) -> list[str]:
@@ -162,6 +163,45 @@ class ProcessData:
                 return hits.reset_index(drop=True)
         return self.work_instructions.reset_index(drop=True)
 
+    def lost_time_window(self, start, end) -> pd.DataFrame:
+        events = self.lost_time
+        if events.empty:
+            return events
+        start_ts = pd.Timestamp(start).normalize()
+        end_ts = pd.Timestamp(end).normalize() + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
+        mask = (events["Date"] >= start_ts) & (events["Date"] <= end_ts)
+        return events.loc[mask].reset_index(drop=True)
+
+    def lost_time_for_lines(self, events: pd.DataFrame, lines: list[str]) -> pd.DataFrame:
+        if events.empty or not lines:
+            return events.iloc[0:0]
+        mask = events["Line"].isin(lines)
+        return events.loc[mask].reset_index(drop=True)
+
+    def lost_time_for_step(self, events: pd.DataFrame, step_id: str) -> pd.DataFrame:
+        if events.empty or not step_id:
+            return events.iloc[0:0]
+        return events.loc[events["StepID"] == step_id].reset_index(drop=True)
+
+    def lost_time_unmapped(self, events: pd.DataFrame) -> pd.DataFrame:
+        if events.empty:
+            return events.iloc[0:0]
+        mapped = events["StepID"].isin(set(self.process_map["StepID"]))
+        return events.loc[~mapped].reset_index(drop=True)
+
+    def fmeas_for_step(self, step_id: str) -> pd.DataFrame:
+        controls = self.controls_for_step(step_id)
+        control_ids = [cid for cid in controls["ControlID"].tolist() if cid]
+        if not control_ids or self.pfmea.empty:
+            return self.pfmea.iloc[0:0]
+        hits = self.pfmea[self.pfmea["ControlID"].isin(control_ids)]
+        return hits.reset_index(drop=True)
+
+    def date_span(self) -> tuple[pd.Timestamp, pd.Timestamp] | None:
+        if self.lost_time.empty:
+            return None
+        return self.lost_time["Date"].min(), self.lost_time["Date"].max()
+
 
 def load_workbook(file_obj, source_name: str = "upload") -> ProcessData:
     sheets = pd.read_excel(file_obj, sheet_name=None)
@@ -228,6 +268,12 @@ def load_workbook(file_obj, source_name: str = "upload") -> ProcessData:
     work_instructions["_step_tokens"] = work_instructions["StepID"].map(split_ids)
     maintenance_pm["ControlID"] = maintenance_pm["ControlID"].map(_clean_str)
 
+    lost_time = _prepare_lost_time(
+        sheets.get("Lost Time DB", pd.DataFrame()),
+        process_map,
+        pfmea,
+    )
+
     return ProcessData(
         overview=overview,
         process_map=process_map,
@@ -237,6 +283,7 @@ def load_workbook(file_obj, source_name: str = "upload") -> ProcessData:
         troubleshooting=troubleshooting,
         work_instructions=work_instructions,
         maintenance_pm=maintenance_pm,
+        lost_time=lost_time,
         source_name=source_name,
     )
 
@@ -247,6 +294,161 @@ def _resolve_next_ids(value: Any) -> list[str]:
     for item in ids:
         resolved.append(NEXT_ID_ALIASES.get(item, item))
     return resolved
+
+
+def _coerce_hours(value: Any) -> float | None:
+    """Lost Time is stored as hours. Non-numeric cells are dropped."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        pass
+    number = pd.to_numeric(value, errors="coerce")
+    if pd.isna(number):
+        return None
+    hours = float(number)
+    if hours <= 0:
+        return None
+    return hours
+
+
+def _prepare_lost_time(raw: pd.DataFrame, process_map: pd.DataFrame, pfmea: pd.DataFrame) -> pd.DataFrame:
+    if raw is None or raw.empty:
+        return pd.DataFrame(
+            columns=[
+                "Date",
+                "StepID",
+                "FmeaID",
+                "Sub-process",
+                "Product",
+                "Issue",
+                "Corrective Action",
+                "Who?",
+                "Hours",
+                "Line",
+                "Zone",
+                "Process",
+                "ControlID",
+                "Failure mode",
+            ]
+        )
+    events = _clean_df(raw)
+    if "Lost Time" not in events.columns or "Date" not in events.columns:
+        return _prepare_lost_time(pd.DataFrame(), process_map, pfmea)
+
+    events["Date"] = pd.to_datetime(events["Date"], errors="coerce")
+    events["Hours"] = events["Lost Time"].map(_coerce_hours)
+    events = events[events["Date"].notna() & events["Hours"].notna()].copy()
+    if events.empty:
+        return _prepare_lost_time(pd.DataFrame(), process_map, pfmea)
+
+    events["StepID"] = events["StepID"].map(_clean_str) if "StepID" in events.columns else None
+    events["FmeaID"] = events["FmeaID"].map(_clean_str) if "FmeaID" in events.columns else None
+    if "Issue (What/Why/How)" in events.columns:
+        events["Issue"] = events["Issue (What/Why/How)"].map(_clean_str)
+    elif "Issue" in events.columns:
+        events["Issue"] = events["Issue"].map(_clean_str)
+    else:
+        events["Issue"] = None
+    for col in ("Sub-process", "Product", "Corrective Action", "Who?"):
+        if col in events.columns:
+            events[col] = events[col].map(_clean_str)
+        else:
+            events[col] = None
+
+    map_cols = process_map[["StepID", "Line", "Zone", "Process"]].drop_duplicates("StepID")
+    events = events.merge(map_cols, on="StepID", how="left")
+
+    fmea_cols = pfmea[["FmeaID", "ControlID", "Failure mode"]].drop_duplicates("FmeaID") if not pfmea.empty else pd.DataFrame(
+        columns=["FmeaID", "ControlID", "Failure mode"]
+    )
+    events = events.merge(fmea_cols, on="FmeaID", how="left")
+
+    keep = [
+        "Date",
+        "StepID",
+        "FmeaID",
+        "Sub-process",
+        "Product",
+        "Issue",
+        "Corrective Action",
+        "Who?",
+        "Hours",
+        "Line",
+        "Zone",
+        "Process",
+        "ControlID",
+        "Failure mode",
+    ]
+    return events[keep].sort_values("Date").reset_index(drop=True)
+
+
+def week_start(series: pd.Series) -> pd.Series:
+    return series.dt.to_period("W-MON").dt.start_time
+
+
+def weekly_hours(events: pd.DataFrame, group_col: str | None = None) -> pd.DataFrame:
+    """Hours by week. One series if group_col is None, else one column per group."""
+    if events.empty:
+        return pd.DataFrame()
+    frame = events.copy()
+    frame["Week"] = week_start(frame["Date"])
+    if not group_col:
+        out = frame.groupby("Week", as_index=True)["Hours"].sum().sort_index().to_frame("Hours")
+        return out
+    frame[group_col] = frame[group_col].map(lambda v: _clean_str(v) or "—")
+    out = (
+        frame.groupby(["Week", group_col], as_index=False)["Hours"]
+        .sum()
+        .pivot(index="Week", columns=group_col, values="Hours")
+        .fillna(0.0)
+        .sort_index()
+    )
+    out.columns = [str(c) for c in out.columns]
+    return out
+
+
+def pareto_hours(events: pd.DataFrame, group_col: str, label_col: str | None = None) -> pd.DataFrame:
+    if events.empty or group_col not in events.columns:
+        return pd.DataFrame(columns=["Label", "Hours"])
+    frame = events.copy()
+    key = frame[group_col].map(lambda v: _clean_str(v) or "Unassigned")
+    if label_col and label_col in frame.columns:
+        extra = frame[label_col].map(lambda v: _clean_str(v) or "")
+        label = [
+            f"{item}  ·  {text}" if text and text != item else item
+            for item, text in zip(key, extra)
+        ]
+    else:
+        label = key
+    grouped = (
+        pd.DataFrame({"Label": label, "Hours": frame["Hours"]})
+        .groupby("Label", as_index=False)["Hours"]
+        .sum()
+        .sort_values("Hours", ascending=False)
+        .reset_index(drop=True)
+    )
+    return grouped
+
+
+def hours_fillcolors(step_ids: list[str], hours_by_step: dict[str, float]) -> dict[str, str]:
+    """Light → dark red by share of mapped hours. Zero-hour steps stay grey."""
+    total = sum(hours_by_step.get(sid, 0.0) for sid in step_ids)
+    empty = "#F2F4F7"
+    low = (254, 237, 236)
+    high = (136, 16, 29)
+    fills: dict[str, str] = {}
+    for sid in step_ids:
+        hours = hours_by_step.get(sid, 0.0)
+        if total <= 0 or hours <= 0:
+            fills[sid] = empty
+            continue
+        share = hours / total
+        rgb = tuple(int(low[i] + (high[i] - low[i]) * share) for i in range(3))
+        fills[sid] = f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+    return fills
 
 
 def _as_yes_no(value: Any) -> str | None:
@@ -278,6 +480,8 @@ def build_line_graph(
     selected_step: str | None = None,
     all_steps: pd.DataFrame | None = None,
     rankdir: str = "LR",
+    step_fillcolors: dict[str, str] | None = None,
+    highlight_selected: bool = True,
 ) -> Digraph:
     chart = Digraph("line_flow")
     chart.attr(rankdir=rankdir, splines="spline", nodesep="0.45", ranksep="0.70")
@@ -318,10 +522,12 @@ def build_line_graph(
             for _, row in zone_steps.iterrows():
                 step_id = row["StepID"]
                 label = f"{step_id}\\n{gv_escape(row['Process'], 40)}"
-                attrs = {
-                    "fillcolor": fills.get(row["Line"], "#FFFFFF"),
-                }
-                if step_id == selected_step:
+                if step_fillcolors is not None:
+                    fill = step_fillcolors.get(step_id, "#F2F4F7")
+                else:
+                    fill = fills.get(row["Line"], "#FFFFFF")
+                attrs = {"fillcolor": fill}
+                if highlight_selected and step_id == selected_step:
                     attrs = {
                         "fillcolor": "#C8102E",
                         "fontcolor": "white",
