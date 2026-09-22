@@ -159,7 +159,7 @@ def _render_step_workspace(model: ProcessData, step: pd.Series) -> None:
         st.info("No process-sheet controls documented for this step yet.")
         st.session_state.pop("selected_control_id", None)
     else:
-        display_cols = [c for c in ["ControlID", "M", "Control", "Type", "Standard", "How set", "Owner"] if c in controls.columns]
+        display_cols = [c for c in ["ControlID", "M Category", "Variable", "Standard", "Rationale", "Owner"] if c in controls.columns]
         visible = controls[display_cols].copy()
         for col in visible.columns:
             if visible[col].isna().all():
