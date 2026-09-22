@@ -223,7 +223,7 @@ def load_workbook(file_obj, source_name: str = "upload") -> ProcessData:
         "Process Map": ["StepID", "Next Step ID", "Line", "Zone", "Process", "Definition"],
         "SIPOC": ["StepID", "Flow type", "Item"],
         "Process Sheet": ["StepID"],
-        "PFMEA": ["ControlID", "Failure mode"],
+        "PFMEA": ["ControlID"],
         "Troubleshooting Guide": ["ID", "Type2", "Prompt", "If yes", "If no"],
         "Work Instructions": ["WI_ID", "Title", "File", "StepID"],
     }
