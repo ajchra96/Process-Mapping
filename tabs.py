@@ -237,7 +237,7 @@ def _render_control_detail(model: ProcessData, control_id: str | None) -> None:
         st.markdown("**PFMEA for this control**")
         for _, row in fmea.iterrows():
             with st.container(border=True):
-                st.markdown(f"**{_text(row.get('FmeaID'))}** · {_text(row.get('Component'))}")
+                st.markdown(f"**{_text(row.get('FMEAID'))}** · {_text(row.get('Component'))}")
                 _encased_field("Function", row.get("Function"))
                 _encased_field("Requirement", row.get("Requirement"))
                 _encased_field("Failure mode", row.get("Failure mode"))
