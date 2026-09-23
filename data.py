@@ -34,13 +34,203 @@ def _clean_str(value: Any) -> str | None:
     return text or None
 
 
-def _clean_df(df: pd.DataFrame) -> pd.DataFrame:
+# Workbook headers the plant file has used. Incoming names on the left
+# become the canonical names the app reads. Matching is case-insensitive.
+#
+# "Control" is the process-sheet variable name. On PFMEA / PM / tree it is
+# the ControlID foreign key — do not apply PROCESS_SHEET_ALIASES there.
+PROCESS_SHEET_ALIASES = {
+    "M": "M Category",
+    "M Category": "M Category",
+    "Control": "Variable",
+    "Variable": "Variable",
+    "How set": "Rationale",
+    "Rationale": "Rationale",
+}
+
+COLUMN_ALIASES = {
+    **PROCESS_SHEET_ALIASES,
+    "FmeaID": "PFMEAID",
+    "FMEAID": "PFMEAID",
+    "FMEA ID": "PFMEAID",
+    "PFMEA ID": "PFMEAID",
+    "PFMEAID": "PFMEAID",
+    "Component": "Asset",
+    "Asset": "Asset",
+    "Next Step ID": "Next Step ID",
+    "NextStepID": "Next Step ID",
+    "Next StepID": "Next Step ID",
+    "Flow type": "Flow type",
+    "Flow Type": "Flow type",
+    "Type2": "Type2",
+    "Node type": "Type2",
+    "Node Type": "Type2",
+}
+
+CANONICAL_SHEETS = [
+    "Structure Overview",
+    "Process Map",
+    "SIPOC",
+    "Process Sheet",
+    "PFMEA",
+    "Troubleshooting Guide",
+    "Work Instructions",
+    "Maintenance PM",
+    "Lost Time DB",
+    "Root Cause",
+]
+
+SHEET_ALIASES = {
+    "structure overview": "Structure Overview",
+    "overview": "Structure Overview",
+    "process map": "Process Map",
+    "processmap": "Process Map",
+    "map": "Process Map",
+    "sipoc": "SIPOC",
+    "process sheet": "Process Sheet",
+    "processsheet": "Process Sheet",
+    "process controls": "Process Sheet",
+    "controls": "Process Sheet",
+    "pfmea": "PFMEA",
+    "fmea": "PFMEA",
+    "troubleshooting guide": "Troubleshooting Guide",
+    "troubleshooting": "Troubleshooting Guide",
+    "trouble shooting": "Troubleshooting Guide",
+    "work instructions": "Work Instructions",
+    "work instruction": "Work Instructions",
+    "wi": "Work Instructions",
+    "maintenance pm": "Maintenance PM",
+    "maintenance": "Maintenance PM",
+    "pm": "Maintenance PM",
+    "lost time db": "Lost Time DB",
+    "lost time": "Lost Time DB",
+    "root cause": "Root Cause",
+}
+
+
+def _norm_key(name: Any) -> str:
+    text = str(name).replace("\u00a0", " ").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text.lower()
+
+
+def _compact_key(name: Any) -> str:
+    return re.sub(r"[^a-z0-9]", "", _norm_key(name))
+
+
+def _clean_df(df: pd.DataFrame, sheet: str | None = None) -> pd.DataFrame:
     out = df.copy()
-    out.columns = [str(c).strip() for c in out.columns]
+    out.columns = [str(c).replace("\u00a0", " ").strip() for c in out.columns]
+    out = _apply_column_aliases(out, sheet=sheet)
     for col in out.columns:
         if out[col].dtype == object:
             out[col] = out[col].map(lambda v: v.strip() if isinstance(v, str) else v)
     return out
+
+
+def _canonical_col(name: Any, sheet: str | None = None) -> str:
+    text = str(name).replace("\u00a0", " ").strip()
+    compact = _compact_key(text)
+    if compact == "controlid":
+        return "ControlID"
+    if sheet != "Process Sheet" and compact == "control":
+        return "ControlID"
+    aliases = PROCESS_SHEET_ALIASES if sheet == "Process Sheet" else COLUMN_ALIASES
+    if sheet == "Process Sheet":
+        aliases = {**COLUMN_ALIASES, **PROCESS_SHEET_ALIASES}
+    alias_by_norm = {_norm_key(old): new for old, new in aliases.items()}
+    alias_by_compact = {_compact_key(old): new for old, new in aliases.items()}
+    return alias_by_norm.get(_norm_key(text), alias_by_compact.get(compact, text))
+
+
+def _apply_column_aliases(df: pd.DataFrame, sheet: str | None = None) -> pd.DataFrame:
+    """Rename known old or differently cased headers to the canonical names."""
+    mapping = {}
+    have = set(df.columns)
+    sheet_aliases = PROCESS_SHEET_ALIASES if sheet == "Process Sheet" else {
+        key: value for key, value in COLUMN_ALIASES.items() if key not in PROCESS_SHEET_ALIASES
+    }
+    if sheet == "Process Sheet":
+        sheet_aliases = {**COLUMN_ALIASES, **PROCESS_SHEET_ALIASES}
+    alias_by_norm = {_norm_key(old): new for old, new in sheet_aliases.items()}
+    alias_by_compact = {_compact_key(old): new for old, new in sheet_aliases.items()}
+    for col in df.columns:
+        compact = _compact_key(col)
+        if compact == "controlid" or (sheet != "Process Sheet" and compact == "control"):
+            if col != "ControlID" and "ControlID" not in have:
+                mapping[col] = "ControlID"
+                have.add("ControlID")
+            continue
+        target = alias_by_norm.get(_norm_key(col)) or alias_by_compact.get(compact)
+        if target and target != col and target not in have:
+            mapping[col] = target
+            have.add(target)
+    return df.rename(columns=mapping) if mapping else df
+
+
+def _control_id_column(frame: pd.DataFrame) -> str | None:
+    if frame is None:
+        return None
+    for name in frame.columns:
+        if _compact_key(name) == "controlid":
+            return str(name)
+    return None
+
+
+def _canonical_sheet_name(name: Any) -> str:
+    raw = str(name).replace("\u00a0", " ").strip()
+    keyed = _norm_key(raw)
+    compact = keyed.replace(" ", "")
+    if keyed in SHEET_ALIASES:
+        return SHEET_ALIASES[keyed]
+    if compact in SHEET_ALIASES:
+        return SHEET_ALIASES[compact]
+    for canon in CANONICAL_SHEETS:
+        if _norm_key(canon) == keyed or _norm_key(canon).replace(" ", "") == compact:
+            return canon
+    return raw
+
+
+def _read_workbook_sheets(file_obj) -> dict[str, pd.DataFrame]:
+    """Read every sheet from a path, buffer, bytes, or Streamlit upload."""
+    payload: bytes | None
+    if isinstance(file_obj, (bytes, bytearray)):
+        payload = bytes(file_obj)
+    elif hasattr(file_obj, "getvalue"):
+        payload = file_obj.getvalue()
+    elif hasattr(file_obj, "read"):
+        if hasattr(file_obj, "seek"):
+            try:
+                file_obj.seek(0)
+            except Exception:
+                pass
+        payload = file_obj.read()
+        if hasattr(file_obj, "seek"):
+            try:
+                file_obj.seek(0)
+            except Exception:
+                pass
+    else:
+        payload = None
+
+    if payload is not None:
+        if not payload:
+            raise ValueError("Workbook file is empty.")
+        source: Any = io.BytesIO(payload)
+    else:
+        source = file_obj
+
+    try:
+        raw = pd.read_excel(source, sheet_name=None, engine="openpyxl")
+    except Exception as exc:
+        raise ValueError(f"Could not parse the .xlsx file ({exc}).") from exc
+
+    sheets: dict[str, pd.DataFrame] = {}
+    for name, frame in (raw or {}).items():
+        canon = _canonical_sheet_name(name)
+        if canon not in sheets or sheets[canon].empty:
+            sheets[canon] = frame
+    return sheets
 
 
 def split_ids(value: Any) -> list[str]:
@@ -96,6 +286,7 @@ class ProcessData:
     maintenance_pm: pd.DataFrame
     lost_time: pd.DataFrame
     source_name: str
+    raw_sheets: dict[str, pd.DataFrame] | None = None
 
     def lines(self) -> list[str]:
         series = self.process_map["Line"].dropna().map(str).map(str.strip)
@@ -129,15 +320,21 @@ class ProcessData:
         return hits.reset_index(drop=True)
 
     def pfmea_for_control(self, control_id: str | None) -> pd.DataFrame:
-        if not control_id:
+        if not control_id or self.pfmea.empty:
             return self.pfmea.iloc[0:0]
-        hits = self.pfmea[self.pfmea["ControlID"] == control_id]
+        column = _control_id_column(self.pfmea)
+        if not column:
+            return self.pfmea.iloc[0:0]
+        hits = self.pfmea[self.pfmea[column] == control_id]
         return hits.reset_index(drop=True)
 
     def pm_for_control(self, control_id: str | None) -> pd.DataFrame:
-        if not control_id:
+        if not control_id or self.maintenance_pm.empty:
             return self.maintenance_pm.iloc[0:0]
-        hits = self.maintenance_pm[self.maintenance_pm["ControlID"] == control_id]
+        column = _control_id_column(self.maintenance_pm)
+        if not column:
+            return self.maintenance_pm.iloc[0:0]
+        hits = self.maintenance_pm[self.maintenance_pm[column] == control_id]
         return hits.reset_index(drop=True)
 
     def symptoms(self, step_id: str | None = None) -> pd.DataFrame:
@@ -175,18 +372,29 @@ class ProcessData:
     def lost_time_for_lines(self, events: pd.DataFrame, lines: list[str]) -> pd.DataFrame:
         if events.empty or not lines:
             return events.iloc[0:0]
+        if "_step_tokens" in events.columns:
+            wanted = set(self.steps_for_lines(lines)["StepID"])
+            mask = events["_step_tokens"].map(lambda tokens: bool(wanted.intersection(tokens)))
+            return events.loc[mask].reset_index(drop=True)
         mask = events["Line"].isin(lines)
         return events.loc[mask].reset_index(drop=True)
 
     def lost_time_for_step(self, events: pd.DataFrame, step_id: str) -> pd.DataFrame:
         if events.empty or not step_id:
             return events.iloc[0:0]
+        if "_step_tokens" in events.columns:
+            mask = events["_step_tokens"].map(lambda tokens: step_id in tokens)
+            return events.loc[mask].reset_index(drop=True)
         return events.loc[events["StepID"] == step_id].reset_index(drop=True)
 
     def lost_time_unmapped(self, events: pd.DataFrame) -> pd.DataFrame:
         if events.empty:
             return events.iloc[0:0]
-        mapped = events["StepID"].isin(set(self.process_map["StepID"]))
+        known = set(self.process_map["StepID"])
+        if "_step_tokens" in events.columns:
+            mapped = events["_step_tokens"].map(lambda tokens: any(t in known for t in tokens))
+            return events.loc[~mapped].reset_index(drop=True)
+        mapped = events["StepID"].isin(known)
         return events.loc[~mapped].reset_index(drop=True)
 
     def fmeas_for_step(self, step_id: str) -> pd.DataFrame:
@@ -204,8 +412,13 @@ class ProcessData:
 
 
 def load_workbook(file_obj, source_name: str = "upload") -> ProcessData:
-    sheets = pd.read_excel(file_obj, sheet_name=None)
+    sheets = _read_workbook_sheets(file_obj)
+    model = _build_model(sheets, source_name=source_name)
+    model.raw_sheets = {name: frame.copy() for name, frame in sheets.items()}
+    return model
 
+
+def _build_model(sheets: dict[str, pd.DataFrame], source_name: str = "upload") -> ProcessData:
     required = [
         "Process Map",
         "SIPOC",
@@ -217,33 +430,38 @@ def load_workbook(file_obj, source_name: str = "upload") -> ProcessData:
     ]
     missing = [name for name in required if name not in sheets]
     if missing:
-        raise ValueError("Workbook is missing sheets: " + ", ".join(missing))
+        found = ", ".join(sheets.keys()) or "none"
+        raise ValueError(
+            "Workbook is missing sheets: "
+            + ", ".join(missing)
+            + f". Found: {found}."
+        )
 
     required_cols = {
         "Process Map": ["StepID", "Next Step ID", "Line", "Zone", "Process", "Definition"],
         "SIPOC": ["StepID", "Flow type", "Item"],
-        "Process Sheet": ["StepID", "Control", "M"],
-        "PFMEA": ["ControlID", "Failure mode"],
+        "Process Sheet": ["StepID"],
+        "PFMEA": ["ControlID"],
         "Troubleshooting Guide": ["ID", "Type2", "Prompt", "If yes", "If no"],
         "Work Instructions": ["WI_ID", "Title", "File", "StepID"],
     }
     problems = []
     for sheet, cols in required_cols.items():
-        have = {str(c).strip() for c in sheets[sheet].columns}
+        have = {_canonical_col(c, sheet=sheet) for c in sheets[sheet].columns}
         miss = [c for c in cols if c not in have]
         if miss:
             problems.append(f"{sheet}: {', '.join(miss)}")
     if problems:
         raise ValueError("Workbook is missing columns: " + "; ".join(problems))
 
-    overview = _clean_df(sheets.get("Structure Overview", pd.DataFrame()))
-    process_map = _clean_df(sheets["Process Map"])
-    sipoc = _clean_df(sheets["SIPOC"])
-    process_sheet = _clean_df(sheets["Process Sheet"])
-    pfmea = _clean_df(sheets["PFMEA"])
-    troubleshooting = _clean_df(sheets["Troubleshooting Guide"])
-    work_instructions = _clean_df(sheets["Work Instructions"])
-    maintenance_pm = _clean_df(sheets["Maintenance PM"])
+    overview = _clean_df(sheets.get("Structure Overview", pd.DataFrame()), sheet="Structure Overview")
+    process_map = _clean_df(sheets["Process Map"], sheet="Process Map")
+    sipoc = _clean_df(sheets["SIPOC"], sheet="SIPOC")
+    process_sheet = _clean_df(sheets["Process Sheet"], sheet="Process Sheet")
+    pfmea = _clean_df(sheets["PFMEA"], sheet="PFMEA")
+    troubleshooting = _clean_df(sheets["Troubleshooting Guide"], sheet="Troubleshooting Guide")
+    work_instructions = _clean_df(sheets["Work Instructions"], sheet="Work Instructions")
+    maintenance_pm = _clean_df(sheets["Maintenance PM"], sheet="Maintenance PM")
 
     process_map["Line"] = process_map["Line"].map(lambda v: _clean_str(v) or "")
     process_map["Zone"] = process_map["Zone"].map(lambda v: _clean_str(v) or "")
@@ -251,22 +469,34 @@ def load_workbook(file_obj, source_name: str = "upload") -> ProcessData:
     process_map["NextIDs"] = process_map["Next Step ID"].map(_resolve_next_ids)
 
     sipoc["_step_tokens"] = sipoc["StepID"].map(split_ids)
-    sipoc["Flow type"] = sipoc["Flow type"].map(lambda v: (_clean_str(v) or "").title())
-    sipoc["CTQ"] = sipoc["CTQ"].map(_as_yes_no)
+    if "Flow type" in sipoc.columns:
+        sipoc["Flow type"] = sipoc["Flow type"].map(lambda v: (_clean_str(v) or "").title())
+    if "CTQ" in sipoc.columns:
+        sipoc["CTQ"] = sipoc["CTQ"].map(_as_yes_no)
 
-    process_sheet["ControlID"] = process_sheet["ControlID"].map(_clean_str)
+    if "ControlID" in process_sheet.columns:
+        process_sheet["ControlID"] = process_sheet["ControlID"].map(_clean_str)
     process_sheet["StepID"] = process_sheet["StepID"].map(_clean_str)
 
-    pfmea["ControlID"] = pfmea["ControlID"].map(_clean_str)
-    pfmea["FmeaID"] = pfmea["FmeaID"].map(_clean_str)
-    pfmea = pfmea[pfmea["ControlID"].notna()].reset_index(drop=True)
+    if "ControlID" in pfmea.columns:
+        pfmea["ControlID"] = pfmea["ControlID"].map(_clean_str)
+        pfmea = pfmea[pfmea["ControlID"].notna()].reset_index(drop=True)
+    if "PFMEAID" in pfmea.columns:
+        pfmea["PFMEAID"] = pfmea["PFMEAID"].map(_clean_str)
 
     troubleshooting["ID"] = troubleshooting["ID"].map(_clean_str)
     troubleshooting["Type2"] = troubleshooting["Type2"].map(_clean_str)
-    troubleshooting["_step_tokens"] = troubleshooting["StepID"].map(split_ids)
+    if "StepID" in troubleshooting.columns:
+        troubleshooting["_step_tokens"] = troubleshooting["StepID"].map(split_ids)
+    else:
+        troubleshooting["_step_tokens"] = [[] for _ in range(len(troubleshooting))]
 
-    work_instructions["_step_tokens"] = work_instructions["StepID"].map(split_ids)
-    maintenance_pm["ControlID"] = maintenance_pm["ControlID"].map(_clean_str)
+    if "StepID" in work_instructions.columns:
+        work_instructions["_step_tokens"] = work_instructions["StepID"].map(split_ids)
+    else:
+        work_instructions["_step_tokens"] = [[] for _ in range(len(work_instructions))]
+    if "ControlID" in maintenance_pm.columns:
+        maintenance_pm["ControlID"] = maintenance_pm["ControlID"].map(_clean_str)
 
     lost_time = _prepare_lost_time(
         sheets.get("Lost Time DB", pd.DataFrame()),
@@ -285,7 +515,204 @@ def load_workbook(file_obj, source_name: str = "upload") -> ProcessData:
         maintenance_pm=maintenance_pm,
         lost_time=lost_time,
         source_name=source_name,
+        raw_sheets=None,
     )
+
+
+STEP_ID_RE = re.compile(r"^(.+)-(\d+)-(\d+)$")
+CONTROL_ID_RE = re.compile(r"^PS-(.+)-(\d+)$")
+
+
+def step_families(process_map: pd.DataFrame) -> list[str]:
+    seen: list[str] = []
+    for sid in process_map.get("StepID", pd.Series(dtype=str)).tolist():
+        text = _clean_str(sid)
+        if not text:
+            continue
+        match = STEP_ID_RE.match(text)
+        family = match.group(1) if match else None
+        if family and family not in seen:
+            seen.append(family)
+    return seen
+
+
+def suggest_step_id(process_map: pd.DataFrame, family: str) -> str:
+    family = (family or "").strip()
+    if not family:
+        family = "B-P"
+    max_pair = (0, 0)
+    found = False
+    pat = re.compile(rf"^{re.escape(family)}-(\d+)-(\d+)$")
+    for sid in process_map.get("StepID", pd.Series(dtype=str)).tolist():
+        text = _clean_str(sid)
+        if not text:
+            continue
+        match = pat.match(text)
+        if match:
+            found = True
+            pair = (int(match.group(1)), int(match.group(2)))
+            if pair > max_pair:
+                max_pair = pair
+    if not found:
+        return f"{family}-01-01"
+    return f"{family}-{max_pair[0]:02d}-{max_pair[1] + 1:02d}"
+
+
+def next_control_id(step_id: str, process_sheet: pd.DataFrame) -> str:
+    step_id = _clean_str(step_id) or ""
+    prefix = f"PS-{step_id}-"
+    max_n = 0
+    series = process_sheet["ControlID"] if "ControlID" in process_sheet.columns else pd.Series(dtype=str)
+    for cid in series.tolist():
+        text = _clean_str(cid)
+        if text and text.startswith(prefix):
+            tail = text[len(prefix) :]
+            if tail.isdigit():
+                max_n = max(max_n, int(tail))
+    return f"{prefix}{max_n + 1:02d}"
+
+
+def next_fmea_id(control_id: str, pfmea: pd.DataFrame) -> str:
+    control_id = _clean_str(control_id) or ""
+    stem = control_id[3:] if control_id.startswith("PS-") else control_id
+    prefix = f"F-{stem}-"
+    max_n = 0
+    series = pfmea["PFMEAID"] if "PFMEAID" in pfmea.columns else pd.Series(dtype=str)
+    for fid in series.tolist():
+        text = _clean_str(fid)
+        if text and text.startswith(prefix):
+            tail = text[len(prefix) :]
+            if tail.isdigit():
+                max_n = max(max_n, int(tail))
+    return f"{prefix}{max_n + 1:02d}"
+
+
+def working_frames(model: ProcessData) -> dict[str, pd.DataFrame]:
+    """Editable copies without helper columns."""
+    process_map = model.process_map.copy()
+    if "NextIDs" in process_map.columns:
+        if "Next Step ID" not in process_map.columns:
+            process_map["Next Step ID"] = process_map["NextIDs"].map(
+                lambda ids: ", ".join(ids) if isinstance(ids, list) else ""
+            )
+        process_map = process_map.drop(columns=["NextIDs"])
+    sipoc = model.sipoc.copy()
+    if "_step_tokens" in sipoc.columns:
+        sipoc["StepID"] = sipoc["_step_tokens"].map(
+            lambda tokens: ", ".join(tokens) if isinstance(tokens, list) else (_clean_str(tokens) or "")
+        )
+        sipoc = sipoc.drop(columns=["_step_tokens"])
+    process_sheet = model.process_sheet.copy()
+    pfmea = model.pfmea.copy()
+    return {
+        "Process Map": process_map.reset_index(drop=True),
+        "SIPOC": sipoc.reset_index(drop=True),
+        "Process Sheet": process_sheet.reset_index(drop=True),
+        "PFMEA": pfmea.reset_index(drop=True),
+    }
+
+
+def rebuild_model_from_working(
+    raw_sheets: dict[str, pd.DataFrame],
+    working: dict[str, pd.DataFrame],
+    source_name: str,
+) -> ProcessData:
+    merged = {name: frame.copy() for name, frame in (raw_sheets or {}).items()}
+    for name, frame in working.items():
+        merged[name] = frame.copy()
+    model = _build_model(merged, source_name=source_name)
+    model.raw_sheets = {name: frame.copy() for name, frame in (raw_sheets or {}).items()}
+    return model
+
+
+EXPORT_RENAMES = {
+    "Process Sheet": {
+        "M": "M Category",
+        "Control": "Variable",
+        "How set": "Rationale",
+    },
+    "PFMEA": {
+        "FMEAID": "PFMEAID",
+        "FmeaID": "PFMEAID",
+        "FMEA ID": "PFMEAID",
+        "Frequency ": "Frequency",
+        "Component": "Asset",
+    },
+}
+
+
+def _export_frame(sheet_name: str, frame: pd.DataFrame, original_columns: list[str] | None) -> pd.DataFrame:
+    out = frame.copy()
+    if sheet_name == "Process Map" and "NextIDs" in out.columns:
+        out["Next Step ID"] = out["NextIDs"].map(lambda ids: ", ".join(ids) if isinstance(ids, list) else "")
+        out = out.drop(columns=["NextIDs"])
+    if sheet_name == "SIPOC" and "_step_tokens" in out.columns:
+        out["StepID"] = out["_step_tokens"].map(
+            lambda tokens: ", ".join(tokens) if isinstance(tokens, list) else (_clean_str(tokens) or "")
+        )
+        out = out.drop(columns=["_step_tokens"])
+    renames = EXPORT_RENAMES.get(sheet_name, {})
+    have = set(out.columns)
+    mapping = {old: new for old, new in renames.items() if old in have and new not in have}
+    if mapping:
+        out = out.rename(columns=mapping)
+    if original_columns:
+        ordered = [col for col in original_columns if col in out.columns]
+        extras = [col for col in out.columns if col not in ordered]
+        out = out[ordered + extras]
+    return out
+
+
+def export_workbook(
+    raw_sheets: dict[str, pd.DataFrame],
+    working: dict[str, pd.DataFrame],
+) -> bytes:
+    """Rebuild an .xlsx: edited cascade sheets from the working copy, others untouched."""
+    payload = io.BytesIO()
+    original_headers = {name: [str(c) for c in frame.columns] for name, frame in (raw_sheets or {}).items()}
+    with pd.ExcelWriter(payload, engine="openpyxl") as writer:
+        names = list(raw_sheets.keys()) if raw_sheets else list(working.keys())
+        for name in working:
+            if name not in names:
+                names.append(name)
+        for name in names:
+            if name in working:
+                frame = _export_frame(name, working[name], original_headers.get(name))
+            else:
+                frame = raw_sheets[name]
+            sheet = name[:31] if name else "Sheet"
+            frame.to_excel(writer, sheet_name=sheet, index=False)
+    return payload.getvalue()
+
+
+def remove_step_id_from_next(process_map: pd.DataFrame, step_id: str) -> pd.DataFrame:
+    out = process_map.copy()
+    if "Next Step ID" not in out.columns:
+        return out
+
+    def _drop(value: Any) -> str:
+        kept = [item for item in split_ids(value) if item != step_id]
+        return ", ".join(kept)
+
+    out["Next Step ID"] = out["Next Step ID"].map(_drop)
+    return out
+
+
+def sipoc_without_step(sipoc: pd.DataFrame, step_id: str) -> pd.DataFrame:
+    out = sipoc.copy()
+    if out.empty or "StepID" not in out.columns:
+        return out
+    kept_rows = []
+    for _, row in out.iterrows():
+        tokens = [item for item in split_ids(row.get("StepID")) if item != step_id]
+        if not tokens:
+            continue
+        new_row = row.copy()
+        new_row["StepID"] = ", ".join(tokens)
+        kept_rows.append(new_row)
+    if not kept_rows:
+        return out.iloc[0:0]
+    return pd.DataFrame(kept_rows).reset_index(drop=True)
 
 
 def _resolve_next_ids(value: Any) -> list[str]:
@@ -320,7 +747,7 @@ def _prepare_lost_time(raw: pd.DataFrame, process_map: pd.DataFrame, pfmea: pd.D
             columns=[
                 "Date",
                 "StepID",
-                "FmeaID",
+                "PFMEAID",
                 "Sub-process",
                 "Product",
                 "Issue",
@@ -334,18 +761,20 @@ def _prepare_lost_time(raw: pd.DataFrame, process_map: pd.DataFrame, pfmea: pd.D
                 "Failure mode",
             ]
         )
-    events = _clean_df(raw)
-    if "Lost Time" not in events.columns or "Date" not in events.columns:
+    events = _clean_df(raw, sheet="Lost Time DB")
+    hours_col = "Lost Time" if "Lost Time" in events.columns else None
+    if hours_col is None or "Date" not in events.columns:
         return _prepare_lost_time(pd.DataFrame(), process_map, pfmea)
 
     events["Date"] = pd.to_datetime(events["Date"], errors="coerce")
-    events["Hours"] = events["Lost Time"].map(_coerce_hours)
+    events["Hours"] = events[hours_col].map(_coerce_hours)
     events = events[events["Date"].notna() & events["Hours"].notna()].copy()
     if events.empty:
         return _prepare_lost_time(pd.DataFrame(), process_map, pfmea)
 
     events["StepID"] = events["StepID"].map(_clean_str) if "StepID" in events.columns else None
-    events["FmeaID"] = events["FmeaID"].map(_clean_str) if "FmeaID" in events.columns else None
+    events["_step_tokens"] = events["StepID"].map(split_ids)
+    events["PFMEAID"] = events["PFMEAID"].map(_clean_str) if "PFMEAID" in events.columns else None
     if "Issue (What/Why/How)" in events.columns:
         events["Issue"] = events["Issue (What/Why/How)"].map(_clean_str)
     elif "Issue" in events.columns:
@@ -359,17 +788,33 @@ def _prepare_lost_time(raw: pd.DataFrame, process_map: pd.DataFrame, pfmea: pd.D
             events[col] = None
 
     map_cols = process_map[["StepID", "Line", "Zone", "Process"]].drop_duplicates("StepID")
-    events = events.merge(map_cols, on="StepID", how="left")
-
-    fmea_cols = pfmea[["FmeaID", "ControlID", "Failure mode"]].drop_duplicates("FmeaID") if not pfmea.empty else pd.DataFrame(
-        columns=["FmeaID", "ControlID", "Failure mode"]
+    known = set(map_cols["StepID"])
+    events["_join_step"] = events["_step_tokens"].map(
+        lambda tokens: next((t for t in tokens if t in known), None)
     )
-    events = events.merge(fmea_cols, on="FmeaID", how="left")
+    events = events.merge(map_cols, left_on="_join_step", right_on="StepID", how="left", suffixes=("", "_map"))
+    if "StepID_map" in events.columns:
+        events["StepID"] = events["StepID"].fillna(events["StepID_map"])
+        events = events.drop(columns=["StepID_map"])
+    events = events.drop(columns=["_join_step"])
+
+    fmea_keep = [c for c in ("PFMEAID", "ControlID", "Failure mode") if c in pfmea.columns]
+    if not pfmea.empty and "PFMEAID" in pfmea.columns:
+        fmea_cols = pfmea[fmea_keep].drop_duplicates("PFMEAID")
+    else:
+        fmea_cols = pd.DataFrame(columns=["PFMEAID", "ControlID", "Failure mode"])
+    if "PFMEAID" not in events.columns:
+        events["PFMEAID"] = None
+    events = events.merge(fmea_cols, on="PFMEAID", how="left")
+    if "Failure mode" not in events.columns:
+        events["Failure mode"] = None
+    if "ControlID" not in events.columns:
+        events["ControlID"] = None
 
     keep = [
         "Date",
         "StepID",
-        "FmeaID",
+        "PFMEAID",
         "Sub-process",
         "Product",
         "Issue",
@@ -381,6 +826,7 @@ def _prepare_lost_time(raw: pd.DataFrame, process_map: pd.DataFrame, pfmea: pd.D
         "Process",
         "ControlID",
         "Failure mode",
+        "_step_tokens",
     ]
     return events[keep].sort_values("Date").reset_index(drop=True)
 

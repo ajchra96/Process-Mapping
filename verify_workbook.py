@@ -55,7 +55,12 @@ def main() -> None:
         sipoc_tokens.update(tokens)
     assert "B-TP-07-02" in sipoc_tokens
     assert len(model.sipoc_for_step("B-P-01-01")) == 3
-    assert len(model.controls_for_step("B-P-01-01")) == 6
+    assert len(model.controls_for_step("B-P-01-01")) == 5
+    assert "M Category" in model.process_sheet.columns
+    assert "Variable" in model.process_sheet.columns
+    assert "Rationale" in model.process_sheet.columns
+    assert "PFMEAID" in model.pfmea.columns
+    assert "Asset" in model.pfmea.columns
     assert len(model.pfmea_for_control("PS-B-P-01-01-02")) == 4
     assert model.pfmea["ControlID"].notna().all()
 
@@ -110,6 +115,12 @@ def main() -> None:
             all_steps=model.process_map,
         ).source
         assert "#C8102E" in default
+    from data import export_workbook, next_control_id, next_fmea_id, working_frames
+
+    assert next_control_id("B-P-01-01", model.process_sheet) == "PS-B-P-01-01-07"
+    assert next_fmea_id("PS-B-P-01-01-02", model.pfmea) == "F-B-P-01-01-02-05"
+    payload = export_workbook(model.raw_sheets or {}, working_frames(model))
+    assert payload[:2] == b"PK"
     print("verify_workbook: ok")
 
 

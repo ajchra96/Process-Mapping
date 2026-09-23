@@ -26,5 +26,7 @@ Upload `Processes.xlsx` from the parent folder in the sidebar. It is not stored 
 ## Layout
 
 - `streamlit_app.py` — sidebar upload + tabs
-- `tabs.py` — one function per tab
-- `data.py` — workbook parse, joins, Graphviz builders
+- `tabs/` — one module per tab (`flow`, `build`, `lost_time`, `troubleshoot`, `documents`)
+- `data.py` — workbook parse, column aliases, joins, Graphviz builders, workbook export
+
+The Build tab edits a working copy of Process Map, SIPOC, Process Sheet, and PFMEA. ControlID and FMEAID are assigned. Download writes a new `.xlsx`; the original file on disk is not overwritten. Refresh discards the working copy.

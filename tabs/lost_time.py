@@ -18,7 +18,7 @@ from data import (
 TABLE_COLS = [
     "Date",
     "StepID",
-    "FmeaID",
+    "PFMEAID",
     "Issue",
     "Hours",
     "Corrective Action",
@@ -93,7 +93,14 @@ def render_lost_time_tab(model: ProcessData) -> None:
         return
 
     steps = model.steps_for_lines(selected_lines)
-    hours_by_step = mapped.groupby("StepID")["Hours"].sum().to_dict() if not mapped.empty else {}
+    hours_by_step: dict[str, float] = {}
+    if not mapped.empty:
+        if "_step_tokens" in mapped.columns:
+            for tokens, hours in zip(mapped["_step_tokens"], mapped["Hours"]):
+                for sid in tokens or []:
+                    hours_by_step[sid] = hours_by_step.get(sid, 0.0) + float(hours)
+        else:
+            hours_by_step = mapped.groupby("StepID")["Hours"].sum().to_dict()
     fills = hours_fillcolors(steps["StepID"].tolist(), hours_by_step)
     total_hours = float(mapped["Hours"].sum()) if not mapped.empty else 0.0
 
@@ -129,14 +136,14 @@ def render_lost_time_tab(model: ProcessData) -> None:
     elif grouping == "Step":
         pareto = pareto_hours(mapped, "StepID", "Process")
     elif grouping == "Failure mode":
-        tagged = mapped[mapped["FmeaID"].notna()] if not mapped.empty else mapped
-        pareto = pareto_hours(tagged, "FmeaID", "Failure mode")
+        tagged = mapped[mapped["PFMEAID"].notna()] if not mapped.empty else mapped
+        pareto = pareto_hours(tagged, "PFMEAID", "Failure mode")
     elif grouping == "Sub-process":
         pareto = pareto_hours(mapped, "Sub-process")
     else:
         pareto = pareto_hours(mapped, "Product")
 
-    if grouping == "Failure mode" and (mapped.empty or mapped["FmeaID"].isna().all()):
+    if grouping == "Failure mode" and (mapped.empty or mapped["PFMEAID"].isna().all()):
         st.caption("No events tagged to a failure mode yet.")
     elif pareto.empty:
         st.caption("No mapped lost hours in this window.")
@@ -172,7 +179,7 @@ def render_step_lost_time(model: ProcessData, step: pd.Series) -> None:
     controls = model.controls_for_step(step_id)
     control_ids = [cid for cid in controls["ControlID"].tolist() if cid]
     control_labels = {
-        row["ControlID"]: f"{row['ControlID']}  ·  {_text(row.get('Control'))}"
+        row["ControlID"]: f"{row['ControlID']}  ·  {_text(row.get('Variable'))}"
         for _, row in controls.iterrows()
         if _clean_str(row.get("ControlID"))
     }
@@ -209,11 +216,11 @@ def render_step_lost_time(model: ProcessData, step: pd.Series) -> None:
             _line_chart(series.rename(columns=rename), "No events tagged to a failure mode for these controls yet.")
 
     fmeas = model.fmeas_for_step(step_id)
-    fmea_ids = [fid for fid in fmeas["FmeaID"].tolist() if fid]
+    fmea_ids = [fid for fid in fmeas["PFMEAID"].tolist() if fid] if "PFMEAID" in fmeas.columns else []
     fmea_labels = {
-        row["FmeaID"]: f"{row['FmeaID']}  ·  {_text(row.get('Failure mode'))}"
+        row["PFMEAID"]: f"{row['PFMEAID']}  ·  {_text(row.get('Failure mode'))}"
         for _, row in fmeas.iterrows()
-        if _clean_str(row.get("FmeaID"))
+        if _clean_str(row.get("PFMEAID"))
     }
 
     st.caption("Hours by PFMEA entry")
@@ -231,13 +238,13 @@ def render_step_lost_time(model: ProcessData, step: pd.Series) -> None:
             on_change=_mark_fmea,
         )
         selected_fmeas = [fid for fid in selected_fmeas if fid in fmea_ids]
-        fmea_events = step_events[step_events["FmeaID"].isin(selected_fmeas)]
+        fmea_events = step_events[step_events["PFMEAID"].isin(selected_fmeas)]
         if not selected_fmeas:
             st.caption("Select at least one failure mode.")
         elif fmea_events.empty:
             st.caption("No events tagged to a failure mode yet.")
         else:
-            series = weekly_hours(fmea_events, "FmeaID")
+            series = weekly_hours(fmea_events, "PFMEAID")
             rename = {fid: fmea_labels.get(fid, fid) for fid in series.columns}
             _line_chart(series.rename(columns=rename), "No events tagged to a failure mode yet.")
 
@@ -246,7 +253,7 @@ def render_step_lost_time(model: ProcessData, step: pd.Series) -> None:
         rows = step_events[step_events["ControlID"].isin(selected_controls)]
         caption = "Rows for selected controls"
     elif source == "fmea" and fmea_ids:
-        rows = step_events[step_events["FmeaID"].isin(selected_fmeas)]
+        rows = step_events[step_events["PFMEAID"].isin(selected_fmeas)]
         caption = "Rows for selected failure modes"
     else:
         rows = step_events
