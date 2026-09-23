@@ -463,7 +463,7 @@ def _controls_block(working: dict[str, pd.DataFrame], step: pd.Series, source_na
         with st.form(f"build_edit_control_{selected}"):
             variable = st.text_input("Variable", value=_clean_str(row.get("Variable")) or "")
             m_cat = st.text_input("M Category", value=_clean_str(row.get("M Category")) or "")
-            kind = st.text_input("Type", value=_clean_str(row.get("Type")) or "")
+            kind = st.text_input("Variable", value=_clean_str(row.get("Variable")) or "")
             standard = st.text_area("Standard", value=_clean_str(row.get("Standard")) or "")
             rationale = st.text_area("Rationale", value=_clean_str(row.get("Rationale")) or "")
             owner = st.text_input("Owner", value=_clean_str(row.get("Owner")) or "")
@@ -478,7 +478,7 @@ def _controls_block(working: dict[str, pd.DataFrame], step: pd.Series, source_na
                 {
                     "Variable": _clean_str(variable),
                     "M Category": _clean_str(m_cat),
-                    "Type": _clean_str(kind),
+                    "Variable": _clean_str(kind),
                     "Standard": _clean_str(standard),
                     "Rationale": _clean_str(rationale),
                     "Owner": _clean_str(owner),
@@ -503,7 +503,7 @@ def _controls_block(working: dict[str, pd.DataFrame], step: pd.Series, source_na
         with st.form(f"build_add_control_{step_id}"):
             variable = st.text_input("Variable")
             m_cat = st.text_input("M Category")
-            kind = st.text_input("Type")
+            kind = st.text_input("Variable")
             standard = st.text_area("Standard")
             rationale = st.text_area("Rationale")
             owner = st.text_input("Owner")
@@ -519,7 +519,7 @@ def _controls_block(working: dict[str, pd.DataFrame], step: pd.Series, source_na
                         "StepID": step_id,
                         "Variable": _clean_str(variable),
                         "M Category": _clean_str(m_cat),
-                        "Type": _clean_str(kind),
+                        "Variable": _clean_str(kind),
                         "Standard": _clean_str(standard),
                         "Rationale": _clean_str(rationale),
                         "Owner": _clean_str(owner),
