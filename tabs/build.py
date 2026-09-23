@@ -555,11 +555,11 @@ def _pfmea_block(working: dict[str, pd.DataFrame], control_id: str, source_name:
             asset = st.text_input("Asset", value=_clean_str(row.get("Asset")) or "")
             function = st.text_input("Function", value=_clean_str(row.get("Function")) or "")
             requirement = st.text_area("Requirement", value=_clean_str(row.get("Requirement")) or "")
-            mode = st.text_area("Failure mode", value=_clean_str(row.get("Failure mode")) or "")
+            mode = st.text_area("Failure mode", value=_clean_str(row.get("Failure Mode")) or "")
             cause = st.text_area("Cause", value=_clean_str(row.get("Cause")) or "")
-            prev_c = st.text_area("Prevention", value=_clean_str(row.get("Prev. control")) or "")
-            det_c = st.text_area("Detection", value=_clean_str(row.get("Det. control")) or "")
-            freq = st.text_input("Frequency", value=_clean_str(row.get("Frequency")) or "")
+            prev_c = st.text_area("Prevention", value=_clean_str(row.get("Preventive Control")) or "")
+            det_c = st.text_area("Detection", value=_clean_str(row.get("Detection Control")) or "")
+            reft = st.text_input("Reference Type", value=_clean_str(row.get("Reference Type")) or "")
             status = st.text_input("Status", value=_clean_str(row.get("Status")) or "")
             st.caption(f"PFMEAID {selected} is locked.")
             save = st.form_submit_button("Save PFMEA")
@@ -574,9 +574,9 @@ def _pfmea_block(working: dict[str, pd.DataFrame], control_id: str, source_name:
                     "Requirement": _clean_str(requirement),
                     "Failure mode": _clean_str(mode),
                     "Cause": _clean_str(cause),
-                    "Prev. control": _clean_str(prev_c),
-                    "Det. control": _clean_str(det_c),
-                    "Frequency": _clean_str(freq),
+                    "Preventive Control": _clean_str(prev_c),
+                    "Detection Control": _clean_str(det_c),
+                    "Reference Type": _clean_str(reft),
                     "Status": _clean_str(status),
                 },
             )
@@ -599,7 +599,7 @@ def _pfmea_block(working: dict[str, pd.DataFrame], control_id: str, source_name:
             cause = st.text_area("Cause")
             prev_c = st.text_area("Prevention")
             det_c = st.text_area("Detection")
-            freq = st.text_input("Frequency")
+            reft = st.text_input("Reference Type")
             create = st.form_submit_button("Create PFMEA")
         if create:
             if not _clean_str(mode):
@@ -615,9 +615,9 @@ def _pfmea_block(working: dict[str, pd.DataFrame], control_id: str, source_name:
                         "Requirement": _clean_str(requirement),
                         "Failure mode": _clean_str(mode),
                         "Cause": _clean_str(cause),
-                        "Prev. control": _clean_str(prev_c),
-                        "Det. control": _clean_str(det_c),
-                        "Frequency": _clean_str(freq),
+                        "Preventive Control": _clean_str(prev_c),
+                        "Detection Control": _clean_str(det_c),
+                        "Reference Type": _clean_str(reft),
                     }
                 )
                 _append_row("PFMEA", row)
