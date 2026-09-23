@@ -560,6 +560,7 @@ def _pfmea_block(working: dict[str, pd.DataFrame], control_id: str, source_name:
             prev_c = st.text_area("Prevention", value=_clean_str(row.get("Preventive Control")) or "")
             det_c = st.text_area("Detection", value=_clean_str(row.get("Detection Control")) or "")
             reft = st.text_input("Reference Type", value=_clean_str(row.get("Reference Type")) or "")
+            refid = st.text_input("Reference ID", value=_clean_str(row.get("Reference ID")) or "")
             status = st.text_input("Status", value=_clean_str(row.get("Status")) or "")
             st.caption(f"PFMEAID {selected} is locked.")
             save = st.form_submit_button("Save PFMEA")
@@ -577,6 +578,7 @@ def _pfmea_block(working: dict[str, pd.DataFrame], control_id: str, source_name:
                     "Preventive Control": _clean_str(prev_c),
                     "Detection Control": _clean_str(det_c),
                     "Reference Type": _clean_str(reft),
+                    "Reference ID": _clean_str(refid),
                     "Status": _clean_str(status),
                 },
             )
@@ -600,6 +602,7 @@ def _pfmea_block(working: dict[str, pd.DataFrame], control_id: str, source_name:
             prev_c = st.text_area("Prevention")
             det_c = st.text_area("Detection")
             reft = st.text_input("Reference Type")
+            refid = st.text_input("Reference ID")
             create = st.form_submit_button("Create PFMEA")
         if create:
             if not _clean_str(mode):
@@ -618,6 +621,7 @@ def _pfmea_block(working: dict[str, pd.DataFrame], control_id: str, source_name:
                         "Preventive Control": _clean_str(prev_c),
                         "Detection Control": _clean_str(det_c),
                         "Reference Type": _clean_str(reft),
+                        "Reference ID": _clean_str(refid),
                     }
                 )
                 _append_row("PFMEA", row)
