@@ -461,9 +461,8 @@ def _controls_block(working: dict[str, pd.DataFrame], step: pd.Series, source_na
         index = int(hits.index[0])
         row = hits.iloc[0]
         with st.form(f"build_edit_control_{selected}"):
-            variable = st.text_input("Variable", value=_clean_str(row.get("Variable")) or "")
             m_cat = st.text_input("M Category", value=_clean_str(row.get("M Category")) or "")
-            kind = st.text_input("Variable", value=_clean_str(row.get("Variable")) or "")
+            variable = st.text_input("Variable", value=_clean_str(row.get("Variable")) or "")
             standard = st.text_area("Standard", value=_clean_str(row.get("Standard")) or "")
             rationale = st.text_area("Rationale", value=_clean_str(row.get("Rationale")) or "")
             owner = st.text_input("Owner", value=_clean_str(row.get("Owner")) or "")
@@ -476,9 +475,8 @@ def _controls_block(working: dict[str, pd.DataFrame], step: pd.Series, source_na
                 "Process Sheet",
                 index,
                 {
-                    "Variable": _clean_str(variable),
                     "M Category": _clean_str(m_cat),
-                    "Variable": _clean_str(kind),
+                    "Variable": _clean_str(variable),
                     "Standard": _clean_str(standard),
                     "Rationale": _clean_str(rationale),
                     "Owner": _clean_str(owner),
@@ -501,9 +499,8 @@ def _controls_block(working: dict[str, pd.DataFrame], step: pd.Series, source_na
     with st.expander("Add control"):
         st.caption(f"Next ControlID: `{preview_id}`")
         with st.form(f"build_add_control_{step_id}"):
-            variable = st.text_input("Variable")
             m_cat = st.text_input("M Category")
-            kind = st.text_input("Variable")
+            variable = st.text_input("Variable")
             standard = st.text_area("Standard")
             rationale = st.text_area("Rationale")
             owner = st.text_input("Owner")
@@ -517,9 +514,8 @@ def _controls_block(working: dict[str, pd.DataFrame], step: pd.Series, source_na
                     {
                         "ControlID": preview_id,
                         "StepID": step_id,
-                        "Variable": _clean_str(variable),
                         "M Category": _clean_str(m_cat),
-                        "Variable": _clean_str(kind),
+                        "Variable": _clean_str(variable),
                         "Standard": _clean_str(standard),
                         "Rationale": _clean_str(rationale),
                         "Owner": _clean_str(owner),
